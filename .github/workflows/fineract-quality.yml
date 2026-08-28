@@ -26,7 +26,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  JAVA_VERSION: '21'
+  JAVA_VERSION: '25'
 
 jobs:
   spotless:
@@ -42,7 +42,7 @@ jobs:
       - name: Setup JDK 21 (Amazon Corretto)
         uses: actions/setup-java@v4
         with:
-          distribution: 'corretto'
+          distribution: 'temurin'
           java-version: ${{ env.JAVA_VERSION }}
           cache: 'gradle'
 
@@ -62,7 +62,7 @@ jobs:
       - name: Setup JDK 21 (Amazon Corretto)
         uses: actions/setup-java@v4
         with:
-          distribution: 'corretto'
+          distribution: 'temurin'
           java-version: ${{ env.JAVA_VERSION }}
           cache: 'gradle'
 
