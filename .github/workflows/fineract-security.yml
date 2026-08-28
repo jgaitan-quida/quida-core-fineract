@@ -70,7 +70,7 @@ jobs:
 
       # ── Trivy container scan (L.1 §6.2) ──
       - name: Trivy container scan (SARIF)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
           format: 'sarif'
@@ -80,7 +80,7 @@ jobs:
 
       - name: Trivy container scan (tabla para logs)
         if: always()
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
           format: 'table'

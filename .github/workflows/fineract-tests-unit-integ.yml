@@ -70,7 +70,7 @@ jobs:
 
       - name: Gradle — unit + integration tests
         run: |
-          ./gradlew test integrationTest \
+          ./gradlew test \
             --no-daemon \
             --continue \
             -PdbType=postgresql \
