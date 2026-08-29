@@ -5,6 +5,10 @@
 # Disparador: PR contra main (GitHub Flow)
 # Bloqueante: si - status check requerido en branch protection
 # Cobertura: JaCoCo (G.2 seccion 6.1 - 90% funciones nuevas)
+#
+# Excluye:
+#   - oauth2-tests, twofactor-tests: requieren servicios externos
+#   - fineract-e2e-tests-*: son E2E, corren en P2.2
 # ============================================================================
 name: "P2.1 - Fineract Unit + Integration Tests"
 
@@ -19,6 +23,8 @@ on:
             - 'fineract-investor/**'
             - 'fineract-branch/**'
             - 'fineract-accounting/**'
+            - 'integration-tests/**'
+            - 'fineract-command-test/**'
             - 'build.gradle'
             - 'settings.gradle'
             - '**/build.gradle'
@@ -34,7 +40,7 @@ concurrency:
 
 jobs:
     unit-tests:
-        name: "Unit Tests"
+        name: "Unit + Integration Tests"
         runs-on: ubuntu-latest
         timeout-minutes: 30
         steps:
@@ -53,8 +59,13 @@ jobs:
                   java-version: '25'
                   cache: 'gradle'
 
-            - name: Gradle test (unit tests solamente)
-              run: ./gradlew test --no-daemon --continue
+            - name: Gradle test (unit + integration, sin E2E ni servicios externos)
+              run: |
+                  ./gradlew test --no-daemon --continue \
+                      -x :oauth2-tests:test \
+                      -x :twofactor-tests:test \
+                      -x :fineract-e2e-tests-core:test \
+                      -x :fineract-e2e-tests-runner:test
 
             - name: Publicar reporte JUnit
               if: always()
@@ -63,7 +74,7 @@ jobs:
                   name: JUnit Results (P2.1)
                   path: '**/build/test-results/test/TEST-*.xml'
                   reporter: java-junit
-                  fail-on-error: false
+                  fail-on-error: true
 
             - name: Upload test artifacts
               if: always()
