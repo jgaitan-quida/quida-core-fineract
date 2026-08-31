@@ -1,20 +1,17 @@
 # ============================================================================
 # P2.4 - Security DAST Scan (OWASP ZAP)
 # SoW 4.0 - Proyecto 2 - Fineract Pruebas y Calidad (Dev)
+#
+# Patron "gate":
+#   - Job 'dast-scan' corre solo si el PR toca codigo Java
+#   - Job 'gate' SIEMPRE corre y reporta status
+#   - Branch Protection debe requerir "DAST Gate" (no "OWASP ZAP DAST via...")
 # ============================================================================
 name: "P2.4 - Fineract Security DAST"
 
 on:
     pull_request:
         branches: [main]
-        paths:
-            - 'fineract-provider/**'
-            - 'fineract-core/**'
-            - 'fineract-loan/**'
-            - 'fineract-savings/**'
-            - 'build.gradle'
-            - '**/build.gradle'
-            - '.github/workflows/fineract-security.yml'
     workflow_dispatch:
 
 permissions:
@@ -27,8 +24,33 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
+    detect-changes:
+        name: "Detect Java changes"
+        runs-on: ubuntu-latest
+        outputs:
+            java_changed: ${{ steps.filter.outputs.java }}
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Detectar cambios en codigo Java o workflow
+              id: filter
+              uses: dorny/paths-filter@v3
+              with:
+                  filters: |
+                      java:
+                          - 'fineract-provider/**'
+                          - 'fineract-core/**'
+                          - 'fineract-loan/**'
+                          - 'fineract-savings/**'
+                          - 'build.gradle'
+                          - '**/build.gradle'
+                          - '.github/workflows/fineract-security.yml'
+
     dast-scan:
         name: "OWASP ZAP DAST via Cloudflare Tunnel"
+        needs: detect-changes
+        if: needs.detect-changes.outputs.java_changed == 'true'
         runs-on: ubuntu-latest
         timeout-minutes: 30
         steps:
@@ -85,22 +107,18 @@ jobs:
                       ports:
                         - "8080:8080"
                   EOF
-
                   docker compose up -d
-                  echo "docker compose levantado"
 
             - name: Esperar a que Fineract responda
               run: |
-                  echo "Esperando Fineract en http://localhost:8080..."
                   for i in $(seq 1 90); do
                       if curl -sf http://localhost:8080/fineract-provider/actuator/health > /dev/null 2>&1; then
-                          echo "Fineract listo en intento $i ($((i*5)) segundos)"
+                          echo "Fineract listo en intento $i"
                           exit 0
                       fi
                       echo "  Intento $i / 90..."
                       sleep 5
                   done
-                  echo "ERROR: Fineract no respondio en 7.5 minutos"
                   docker compose logs fineract | tail -100
                   exit 1
 
@@ -108,7 +126,6 @@ jobs:
               run: |
                   curl -sSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
                   sudo dpkg -i cloudflared.deb
-                  cloudflared --version
 
             - name: Iniciar Cloudflare Quick Tunnel
               id: tunnel
@@ -116,8 +133,6 @@ jobs:
                   cloudflared tunnel --url http://localhost:8080 --no-autoupdate > tunnel.log 2>&1 &
                   TUNNEL_PID=$!
                   echo "TUNNEL_PID=$TUNNEL_PID" >> $GITHUB_ENV
-
-                  echo "Esperando URL del tunnel..."
                   for i in $(seq 1 30); do
                       URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel.log | head -1)
                       if [ -n "$URL" ]; then
@@ -127,22 +142,16 @@ jobs:
                       fi
                       sleep 2
                   done
-                  echo "ERROR: No se pudo obtener URL del tunnel"
                   cat tunnel.log
                   exit 1
 
-            - name: Verificar que ZAP puede alcanzar Fineract via tunnel
+            - name: Verificar acceso via tunnel
               run: |
                   URL="${{ steps.tunnel.outputs.tunnel_url }}"
-                  echo "Verificando acceso a $URL/fineract-provider/actuator/health"
                   sleep 10
-                  curl -sf "$URL/fineract-provider/actuator/health" || {
-                      echo "ERROR: No se puede acceder via tunnel"
-                      exit 1
-                  }
-                  echo "OK - Fineract accesible via tunnel"
+                  curl -sf "$URL/fineract-provider/actuator/health"
 
-            - name: OWASP ZAP Baseline Scan (docker directo)
+            - name: OWASP ZAP Baseline Scan
               run: |
                   URL="${{ steps.tunnel.outputs.tunnel_url }}/fineract-provider/"
                   mkdir -p zap-reports
@@ -150,7 +159,7 @@ jobs:
 
                   set +e
                   docker run --rm \
-                      -v "$(pwd)/zap-reports":/zap/wrk/:rw \
+                      -v "$(pwd)/zap-reports:/zap/wrk/:rw" \
                       --network=host \
                       ghcr.io/zaproxy/zaproxy:stable \
                       zap-baseline.py \
@@ -163,17 +172,10 @@ jobs:
                   set -e
 
                   echo "ZAP exit code: $EXIT_CODE"
-                  # ZAP exit codes:
-                  #   0 = success (no issues)
-                  #   1 = FAIL-NEW (high risk findings)
-                  #   2 = WARN-NEW (medium/low findings) - lo permitimos por -I
-                  # Solo fallamos si exit code >= 3 (error del scanner)
                   if [ "$EXIT_CODE" -ge 3 ]; then
-                      echo "::error::ZAP scanner error (exit code $EXIT_CODE)"
                       exit 1
                   fi
 
-                  # Verificar que no haya FAIL (CRITICAL/HIGH)
                   if [ -f zap-reports/report_json.json ]; then
                       FAIL_COUNT=$(python3 -c "
                   import json
@@ -182,17 +184,16 @@ jobs:
                   fails = 0
                   for site in data.get('site', []):
                       for alert in site.get('alerts', []):
-                          if alert.get('riskcode') == '3':  # High
+                          if alert.get('riskcode') == '3':
                               fails += int(alert.get('count', 0))
                   print(fails)
                   " 2>/dev/null || echo "0")
-                      echo "FAIL-NEW (CRITICAL/HIGH) count: $FAIL_COUNT"
+                      echo "FAIL-NEW (HIGH) count: $FAIL_COUNT"
                       if [ "$FAIL_COUNT" -gt 0 ]; then
-                          echo "::error::ZAP encontro $FAIL_COUNT vulnerabilidades HIGH/CRITICAL (L.1 6.2)"
+                          echo "::error::ZAP encontro $FAIL_COUNT vulnerabilidades HIGH (L.1 6.2)"
                           exit 1
                       fi
                   fi
-
                   echo "P2.4 DAST scan PASSED"
 
             - name: Cleanup - matar tunnel
@@ -200,7 +201,6 @@ jobs:
               run: |
                   if [ -n "$TUNNEL_PID" ]; then
                       kill $TUNNEL_PID 2>/dev/null || true
-                      echo "Tunnel cerrado"
                   fi
 
             - name: Cleanup - docker compose down
@@ -208,7 +208,6 @@ jobs:
               run: |
                   docker compose logs fineract | tail -100 > fineract-logs.txt
                   docker compose down -v
-                  echo "docker compose destruido"
 
             - name: Upload reportes ZAP
               if: always()
@@ -225,3 +224,31 @@ jobs:
                   name: fineract-logs-p2-4
                   path: fineract-logs.txt
                   retention-days: 7
+
+    # Gate job: SIEMPRE corre, reporta status para Branch Protection
+    gate:
+        name: "DAST Gate"
+        needs: [detect-changes, dast-scan]
+        if: always()
+        runs-on: ubuntu-latest
+        steps:
+            - name: Evaluar resultado
+              run: |
+                  JAVA_CHANGED="${{ needs.detect-changes.outputs.java_changed }}"
+                  DAST_RESULT="${{ needs.dast-scan.result }}"
+
+                  echo "Java changed: $JAVA_CHANGED"
+                  echo "DAST result: $DAST_RESULT"
+
+                  if [ "$JAVA_CHANGED" != "true" ]; then
+                      echo "OK - PR sin cambios Java, DAST skippeado"
+                      exit 0
+                  fi
+
+                  if [ "$DAST_RESULT" = "success" ]; then
+                      echo "OK - DAST paso"
+                      exit 0
+                  fi
+
+                  echo "::error::DAST fallo (result: $DAST_RESULT)"
+                  exit 1

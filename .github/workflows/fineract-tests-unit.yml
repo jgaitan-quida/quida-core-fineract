@@ -2,31 +2,16 @@
 # P2.1 - Unit Tests (JUnit)
 # SoW 4.0 - Proyecto 2 - Fineract Pruebas y Calidad (Dev)
 #
-# Disparador: PR contra main (GitHub Flow)
-# Bloqueante: si - status check requerido en branch protection
-# Cobertura: JaCoCo (G.2 seccion 6.1 - 90% funciones nuevas)
-#
-# Excluye (van en otros pipelines):
-#   - integration-tests, oauth2-tests, twofactor-tests: requieren Fineract corriendo
-#   - fineract-e2e-tests-*: E2E, corren en P2.2 con infra completa
+# Patron "gate":
+#   - Job 'unit-tests' corre solo si el PR toca codigo Java (paths filter)
+#   - Job 'gate' SIEMPRE corre y reporta status
+#   - Branch Protection debe requerir "Unit Tests Gate" (no "Unit Tests")
 # ============================================================================
 name: "P2.1 - Fineract Unit Tests"
 
 on:
     pull_request:
         branches: [main]
-        paths:
-            - 'fineract-provider/**'
-            - 'fineract-core/**'
-            - 'fineract-loan/**'
-            - 'fineract-savings/**'
-            - 'fineract-investor/**'
-            - 'fineract-branch/**'
-            - 'fineract-accounting/**'
-            - 'fineract-command-test/**'
-            - 'build.gradle'
-            - 'settings.gradle'
-            - '**/build.gradle'
     workflow_dispatch:
 
 permissions:
@@ -38,8 +23,37 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
+    detect-changes:
+        name: "Detect Java changes"
+        runs-on: ubuntu-latest
+        outputs:
+            java_changed: ${{ steps.filter.outputs.java }}
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Detectar cambios en codigo Java
+              id: filter
+              uses: dorny/paths-filter@v3
+              with:
+                  filters: |
+                      java:
+                          - 'fineract-provider/**'
+                          - 'fineract-core/**'
+                          - 'fineract-loan/**'
+                          - 'fineract-savings/**'
+                          - 'fineract-investor/**'
+                          - 'fineract-branch/**'
+                          - 'fineract-accounting/**'
+                          - 'fineract-command-test/**'
+                          - 'build.gradle'
+                          - 'settings.gradle'
+                          - '**/build.gradle'
+
     unit-tests:
         name: "Unit Tests"
+        needs: detect-changes
+        if: needs.detect-changes.outputs.java_changed == 'true'
         runs-on: ubuntu-latest
         timeout-minutes: 25
         steps:
@@ -58,7 +72,7 @@ jobs:
                   java-version: '25'
                   cache: 'gradle'
 
-            - name: Gradle test (solo unit, sin modulos que requieren infra)
+            - name: Gradle test (solo unit, sin modulos con infra)
               run: |
                   ./gradlew test --no-daemon --continue \
                       -x :integration-tests:test \
@@ -85,3 +99,31 @@ jobs:
                       **/build/test-results/
                       **/build/reports/tests/
                   retention-days: 30
+
+    # Gate job: SIEMPRE corre, reporta status para Branch Protection
+    gate:
+        name: "Unit Tests Gate"
+        needs: [detect-changes, unit-tests]
+        if: always()
+        runs-on: ubuntu-latest
+        steps:
+            - name: Evaluar resultado
+              run: |
+                  JAVA_CHANGED="${{ needs.detect-changes.outputs.java_changed }}"
+                  TESTS_RESULT="${{ needs.unit-tests.result }}"
+
+                  echo "Java changed: $JAVA_CHANGED"
+                  echo "Tests result: $TESTS_RESULT"
+
+                  if [ "$JAVA_CHANGED" != "true" ]; then
+                      echo "OK - PR sin cambios Java, tests skippeados"
+                      exit 0
+                  fi
+
+                  if [ "$TESTS_RESULT" = "success" ]; then
+                      echo "OK - Unit tests pasaron"
+                      exit 0
+                  fi
+
+                  echo "::error::Unit tests fallaron (result: $TESTS_RESULT)"
+                  exit 1
