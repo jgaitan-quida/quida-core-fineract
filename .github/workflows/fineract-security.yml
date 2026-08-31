@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # P2.4 - Security DAST Scan (OWASP ZAP)
 # SoW 4.0 - Proyecto 2 - Fineract Pruebas y Calidad (Dev)
 # ============================================================================
@@ -150,7 +150,7 @@ jobs:
 
                   set +e
                   docker run --rm \
-                      -v \$PWD/zap-reports:/zap/wrk/:rw \
+                      -v "$(pwd)/zap-reports":/zap/wrk/:rw \
                       --network=host \
                       ghcr.io/zaproxy/zaproxy:stable \
                       zap-baseline.py \
@@ -225,3 +225,4 @@ jobs:
                   name: fineract-logs-p2-4
                   path: fineract-logs.txt
                   retention-days: 7
+
