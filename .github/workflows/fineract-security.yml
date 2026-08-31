@@ -1,20 +1,6 @@
 # ============================================================================
 # P2.4 - Security DAST Scan (OWASP ZAP)
 # SoW 4.0 - Proyecto 2 - Fineract Pruebas y Calidad (Dev)
-#
-# Disparador: PR contra main (GitHub Flow) + workflow_dispatch
-# Bloqueante: si - falla PR si Critical/High en ZAP
-#
-# Flujo:
-#   1. Levantar Postgres + Fineract con docker-compose
-#   2. Health check hasta que Fineract responda
-#   3. Abrir Cloudflare Quick Tunnel -> URL efimera publica
-#   4. OWASP ZAP Baseline + API scan contra la URL
-#   5. Upload de reportes como artifact
-#   6. Cleanup
-#
-# Migracion futura: cuando exista Aikido DAST configurado,
-# reemplazar el step de ZAP por Aikido DAST API call.
 # ============================================================================
 name: "P2.4 - Fineract Security DAST"
 
@@ -49,6 +35,14 @@ jobs:
             - name: Checkout
               uses: actions/checkout@v4
 
+            - name: Crear script de init Postgres
+              run: |
+                  mkdir -p pg-init
+                  cat > pg-init/01-create-databases.sql <<EOF
+                  CREATE DATABASE fineract_tenants;
+                  CREATE DATABASE fineract_default;
+                  EOF
+
             - name: Levantar PostgreSQL + Fineract con docker compose
               run: |
                   cat > docker-compose.yml <<EOF
@@ -58,13 +52,16 @@ jobs:
                       environment:
                         POSTGRES_USER: postgres
                         POSTGRES_PASSWORD: postgres
+                        POSTGRES_DB: postgres
                       ports:
                         - "5432:5432"
+                      volumes:
+                        - ./pg-init:/docker-entrypoint-initdb.d
                       healthcheck:
-                        test: ["CMD-SHELL", "pg_isready -U postgres"]
+                        test: ["CMD-SHELL", "pg_isready -U postgres -d fineract_tenants"]
                         interval: 5s
                         timeout: 3s
-                        retries: 20
+                        retries: 30
 
                     fineract:
                       image: apache/fineract:latest
@@ -72,20 +69,19 @@ jobs:
                         db:
                           condition: service_healthy
                       environment:
-                        FINERACT_DEFAULT_TENANTDB_HOSTNAME: db
-                        FINERACT_DEFAULT_TENANTDB_PORT: 5432
-                        FINERACT_DEFAULT_TENANTDB_UID: postgres
-                        FINERACT_DEFAULT_TENANTDB_PWD: postgres
-                        FINERACT_TENANTS_DRIVER: org.postgresql.Driver
-                        FINERACT_TENANTS_URL: jdbc:postgresql://db:5432/fineract_tenants
-                        FINERACT_TENANTS_UID: postgres
-                        FINERACT_TENANTS_PWD: postgres
                         FINERACT_HIKARI_DRIVER_SOURCE_CLASS_NAME: org.postgresql.Driver
                         FINERACT_HIKARI_JDBC_URL: jdbc:postgresql://db:5432/fineract_tenants
                         FINERACT_HIKARI_USERNAME: postgres
                         FINERACT_HIKARI_PASSWORD: postgres
+                        FINERACT_DEFAULT_TENANTDB_HOSTNAME: db
+                        FINERACT_DEFAULT_TENANTDB_PORT: 5432
+                        FINERACT_DEFAULT_TENANTDB_UID: postgres
+                        FINERACT_DEFAULT_TENANTDB_PWD: postgres
+                        FINERACT_DEFAULT_TENANTDB_NAME: fineract_default
+                        FINERACT_DEFAULT_TENANTDB_CONN_PARAMS: ''
                         FINERACT_SERVER_SSL_ENABLED: false
                         FINERACT_SERVER_PORT: 8080
+                        JAVA_TOOL_OPTIONS: "-Xmx1g -Xms512m"
                       ports:
                         - "8080:8080"
                   EOF
@@ -96,16 +92,16 @@ jobs:
             - name: Esperar a que Fineract responda
               run: |
                   echo "Esperando Fineract en http://localhost:8080..."
-                  for i in $(seq 1 60); do
+                  for i in $(seq 1 90); do
                       if curl -sf http://localhost:8080/fineract-provider/actuator/health > /dev/null 2>&1; then
                           echo "Fineract listo en intento $i ($((i*5)) segundos)"
                           exit 0
                       fi
-                      echo "  Intento $i / 60..."
+                      echo "  Intento $i / 90..."
                       sleep 5
                   done
-                  echo "ERROR: Fineract no respondio en 5 minutos"
-                  docker compose logs fineract | tail -50
+                  echo "ERROR: Fineract no respondio en 7.5 minutos"
+                  docker compose logs fineract | tail -100
                   exit 1
 
             - name: Instalar cloudflared
@@ -117,12 +113,10 @@ jobs:
             - name: Iniciar Cloudflare Quick Tunnel
               id: tunnel
               run: |
-                  # Arrancar tunnel en background, guardar output para extraer URL
                   cloudflared tunnel --url http://localhost:8080 --no-autoupdate > tunnel.log 2>&1 &
                   TUNNEL_PID=$!
                   echo "TUNNEL_PID=$TUNNEL_PID" >> $GITHUB_ENV
 
-                  # Esperar a que aparezca la URL en el log (max 60s)
                   echo "Esperando URL del tunnel..."
                   for i in $(seq 1 30); do
                       URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel.log | head -1)
@@ -141,7 +135,6 @@ jobs:
               run: |
                   URL="${{ steps.tunnel.outputs.tunnel_url }}"
                   echo "Verificando acceso a $URL/fineract-provider/actuator/health"
-                  # Esperar propagacion del tunnel
                   sleep 10
                   curl -sf "$URL/fineract-provider/actuator/health" || {
                       echo "ERROR: No se puede acceder via tunnel"
@@ -173,7 +166,7 @@ jobs:
                   docker compose down -v
                   echo "docker compose destruido"
 
-            - name: Upload Fineract logs (para debugging)
+            - name: Upload Fineract logs
               if: always()
               uses: actions/upload-artifact@v4
               with:
