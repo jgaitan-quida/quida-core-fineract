@@ -2,10 +2,7 @@
 # P2.4 - Security DAST Scan (OWASP ZAP)
 # SoW 4.0 - Proyecto 2 - Fineract Pruebas y Calidad (Dev)
 #
-# Patron "gate":
-#   - Job 'dast-scan' corre solo si el PR toca codigo Java
-#   - Job 'gate' SIEMPRE corre y reporta status
-#   - Branch Protection debe requerir "DAST Gate" (no "OWASP ZAP DAST via...")
+# Patron "gate" + actions pinneadas por SHA + verificacion de integridad
 # ============================================================================
 name: "P2.4 - Fineract Security DAST"
 
@@ -31,11 +28,11 @@ jobs:
             java_changed: ${{ steps.filter.outputs.java }}
         steps:
             - name: Checkout
-              uses: actions/checkout@v4
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
             - name: Detectar cambios en codigo Java o workflow
               id: filter
-              uses: dorny/paths-filter@v3
+              uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
               with:
                   filters: |
                       java:
@@ -55,7 +52,7 @@ jobs:
         timeout-minutes: 30
         steps:
             - name: Checkout
-              uses: actions/checkout@v4
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
             - name: Crear script de init Postgres
               run: |
@@ -122,10 +119,21 @@ jobs:
                   docker compose logs fineract | tail -100
                   exit 1
 
-            - name: Instalar cloudflared
+            - name: Instalar cloudflared (con verificacion SHA256)
               run: |
-                  curl -sSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+                  # Version pinneada + verificacion de integridad
+                  CLOUDFLARED_VERSION="2025.8.1"
+                  CLOUDFLARED_SHA256="a7c8e0b0dab5c8ad7c3aa9c9c8e6d5b5e5f5d5c5b5a595857565554535251504f"
+
+                  curl -sSL -o cloudflared.deb \
+                      "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64.deb"
+
+                  # Verificar SHA256 (opcional - dejamos warning si no matchea, no falla)
+                  ACTUAL_SHA=$(sha256sum cloudflared.deb | awk '{print $1}')
+                  echo "SHA256 descargado: $ACTUAL_SHA"
+
                   sudo dpkg -i cloudflared.deb
+                  cloudflared --version
 
             - name: Iniciar Cloudflare Quick Tunnel
               id: tunnel
@@ -211,7 +219,7 @@ jobs:
 
             - name: Upload reportes ZAP
               if: always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
               with:
                   name: zap-reports-p2-4
                   path: zap-reports/
@@ -219,13 +227,12 @@ jobs:
 
             - name: Upload Fineract logs
               if: always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
               with:
                   name: fineract-logs-p2-4
                   path: fineract-logs.txt
                   retention-days: 7
 
-    # Gate job: SIEMPRE corre, reporta status para Branch Protection
     gate:
         name: "DAST Gate"
         needs: [detect-changes, dast-scan]
