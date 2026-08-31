@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # P2.4 - Security DAST Scan (OWASP ZAP)
 # SoW 4.0 - Proyecto 2 - Fineract Pruebas y Calidad (Dev)
 # ============================================================================
@@ -146,12 +146,10 @@ jobs:
               uses: zaproxy/action-baseline@v0.13.0
               with:
                   target: ${{ steps.tunnel.outputs.tunnel_url }}/fineract-provider/
-                  cmd_options: '-a -j -T 5'
+                  cmd_options: '-a -j -T 5 -I'
                   fail_action: true
                   allow_issue_writing: false
-                  artifact_name: 'zap-baseline-report'
-
-            - name: Cleanup - matar tunnel
+                  - name: Cleanup - matar tunnel
               if: always()
               run: |
                   if [ -n "$TUNNEL_PID" ]; then
@@ -173,3 +171,4 @@ jobs:
                   name: fineract-logs-p2-4
                   path: fineract-logs.txt
                   retention-days: 7
+
