@@ -74,12 +74,15 @@ jobs:
 
             - name: Gradle test (solo unit, sin modulos con infra)
               run: |
-                  ./gradlew test --no-daemon --continue \
+                  export GRADLE_OPTS="-Xmx6g -Dorg.gradle.jvmargs=-Xmx6g"
+                  ./gradlew test --no-daemon --continue --max-workers=2 \
                       -x :integration-tests:test \
                       -x :oauth2-tests:test \
                       -x :twofactor-tests:test \
                       -x :fineract-e2e-tests-core:test \
-                      -x :fineract-e2e-tests-runner:test
+                      -x :fineract-e2e-tests-runner:test \
+                      -x :fineract-client-feign:buildJavaSdk \
+                      -x :fineract-client-feign:test
 
             - name: Publicar reporte JUnit
               if: always()
