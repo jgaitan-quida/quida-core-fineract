@@ -29,6 +29,7 @@ permissions:
     contents: read
     packages: write
     id-token: write
+    actions: read
 
 concurrency:
     group: p3-1-build
