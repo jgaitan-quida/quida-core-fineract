@@ -3,15 +3,7 @@
 # SoW 4.0 - Proyecto 3 - Fineract Build y Despliegue (Dev+QA)
 #
 # Disparador: workflow_call desde P3.1 (post-build) o workflow_dispatch manual
-# Acciones:
-#   1. Descargar artifact de P3.1
-#   2. Verificar firma Cosign (asegurar imagen legitima)
-#   3. Validar SBOM
-#   4. ArgoCD sync (simulado en PoC sin cluster)
-#   5. Health check post-deploy
-#   6. Rollback automatico si falla
-#
-# PoC: sin cluster EKS/ArgoCD real, los steps de deploy son simulados.
+# Seguridad: inputs y secrets pasados como env vars (previene template injection)
 # ============================================================================
 name: "P3.2 - Fineract Deploy"
 
@@ -55,7 +47,7 @@ env:
 
 jobs:
     deploy:
-        name: "Deploy to ${{ inputs.environment }}"
+        name: "Deploy Fineract"
         runs-on: ubuntu-latest
         timeout-minutes: 15
 
@@ -83,6 +75,7 @@ jobs:
             - name: Verificar firma Cosign (S-05)
               env:
                   COSIGN_EXPERIMENTAL: 1
+                  GH_REPO: ${{ github.repository }}
               run: |
                   echo "::group::Verificacion de firma Cosign"
 
@@ -101,11 +94,10 @@ jobs:
                       exit 1
                   fi
 
-                  # Verificar la firma
                   cosign verify-blob \
                       --certificate build-artifacts/fineract-image.tar.gz.cert \
                       --signature build-artifacts/fineract-image.tar.gz.sig \
-                      --certificate-identity-regexp "https://github.com/${{ github.repository }}" \
+                      --certificate-identity-regexp "https://github.com/${GH_REPO}" \
                       --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
                       build-artifacts/fineract-image.tar.gz
 
@@ -132,7 +124,6 @@ jobs:
                   echo "SBOM SPDX: $SPDX_LINES lineas"
                   echo "SBOM CycloneDX: $CYCLONEDX_LINES lineas"
 
-                  # Verificar JSON valido
                   python3 -c "import json; json.load(open('build-artifacts/sbom-spdx.json'))" && \
                       echo "SBOM SPDX es JSON valido"
                   python3 -c "import json; json.load(open('build-artifacts/sbom-cyclonedx.json'))" && \
@@ -141,40 +132,40 @@ jobs:
                   echo "::endgroup::"
 
             - name: ArgoCD sync (simulado)
+              env:
+                  DEPLOY_ENV: ${{ inputs.environment }}
+                  IMAGE_TAG: ${{ inputs.image_tag }}
+                  ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
               run: |
                   echo "::group::ArgoCD Sync"
-                  echo "Ambiente:  ${{ inputs.environment }}"
-                  echo "Namespace: ${{ env.NAMESPACE }}"
-                  echo "Image tag: ${{ inputs.image_tag }}"
+                  echo "Ambiente:  $DEPLOY_ENV"
+                  echo "Namespace: $NAMESPACE"
+                  echo "Image tag: $IMAGE_TAG"
                   echo ""
 
-                  if [ -n "${{ secrets.ARGOCD_SERVER }}" ]; then
+                  if [ -n "$ARGOCD_SERVER" ]; then
                       echo "Ejecutando sync real contra ArgoCD..."
-                      # argocd app set fineract-${{ inputs.environment }} \
-                      #   --helm-set image.tag=${{ inputs.image_tag }} \
-                      #   --server ${{ secrets.ARGOCD_SERVER }} \
-                      #   --auth-token ${{ secrets.ARGOCD_TOKEN }}
-                      # argocd app sync fineract-${{ inputs.environment }} --wait
+                      # argocd app set fineract-$DEPLOY_ENV --helm-set image.tag=$IMAGE_TAG
+                      # argocd app sync fineract-$DEPLOY_ENV --wait
                       echo "ArgoCD sync completado"
                   else
                       echo "::notice::PoC sin ArgoCD - simulando sync"
                       echo ""
                       echo "Comandos que se ejecutarian en produccion:"
-                      echo "  argocd app set fineract-${{ inputs.environment }} \\"
-                      echo "    --helm-set image.tag=${{ inputs.image_tag }} \\"
-                      echo "    --server \${ARGOCD_SERVER} \\"
-                      echo "    --auth-token \${ARGOCD_TOKEN}"
-                      echo ""
-                      echo "  argocd app sync fineract-${{ inputs.environment }} --wait --timeout 300"
+                      echo "  argocd app set fineract-$DEPLOY_ENV --helm-set image.tag=$IMAGE_TAG"
+                      echo "  argocd app sync fineract-$DEPLOY_ENV --wait --timeout 300"
                   fi
                   echo "::endgroup::"
 
             - name: Health check post-deploy (simulado)
+              env:
+                  DEPLOY_ENV: ${{ inputs.environment }}
+                  ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
               run: |
                   echo "::group::Health Check"
 
-                  if [ -n "${{ secrets.ARGOCD_SERVER }}" ]; then
-                      FINERACT_URL="https://fineract-${{ inputs.environment }}.quida.internal/actuator/health"
+                  if [ -n "$ARGOCD_SERVER" ]; then
+                      FINERACT_URL="https://fineract-${DEPLOY_ENV}.quida.internal/actuator/health"
                       echo "Health check contra: $FINERACT_URL"
 
                       for i in $(seq 1 12); do
@@ -203,31 +194,38 @@ jobs:
 
             - name: Rollback si fallo el deploy
               if: failure()
+              env:
+                  DEPLOY_ENV: ${{ inputs.environment }}
+                  ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
               run: |
                   echo "::error::Deploy fallo - iniciando rollback automatico"
                   echo "::group::Rollback"
 
-                  if [ -n "${{ secrets.ARGOCD_SERVER }}" ]; then
-                      # argocd app rollback fineract-${{ inputs.environment }}
+                  if [ -n "$ARGOCD_SERVER" ]; then
+                      # argocd app rollback fineract-$DEPLOY_ENV
                       echo "ArgoCD rollback ejecutado"
                   else
                       echo "::notice::PoC - rollback simulado"
-                      echo "  argocd app rollback fineract-${{ inputs.environment }}"
+                      echo "  argocd app rollback fineract-$DEPLOY_ENV"
                   fi
                   echo "::endgroup::"
 
             - name: Resumen del deploy
               if: success()
+              env:
+                  DEPLOY_ENV: ${{ inputs.environment }}
+                  IMAGE_TAG: ${{ inputs.image_tag }}
+                  ARGOCD_CONFIGURED: ${{ secrets.ARGOCD_SERVER != '' && 'Real' || 'Simulado' }}
               run: |
                   echo "## P3.2 Deploy Summary" >> $GITHUB_STEP_SUMMARY
                   echo "" >> $GITHUB_STEP_SUMMARY
                   echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
                   echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-                  echo "| Ambiente | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
-                  echo "| Image tag | ${{ inputs.image_tag }} |" >> $GITHUB_STEP_SUMMARY
-                  echo "| Namespace | ${{ env.NAMESPACE }} |" >> $GITHUB_STEP_SUMMARY
+                  echo "| Ambiente | $DEPLOY_ENV |" >> $GITHUB_STEP_SUMMARY
+                  echo "| Image tag | $IMAGE_TAG |" >> $GITHUB_STEP_SUMMARY
+                  echo "| Namespace | $NAMESPACE |" >> $GITHUB_STEP_SUMMARY
                   echo "| Cosign verify | OK |" >> $GITHUB_STEP_SUMMARY
                   echo "| SBOM validation | OK |" >> $GITHUB_STEP_SUMMARY
-                  echo "| ArgoCD sync | ${{ secrets.ARGOCD_SERVER != '' && 'Real' || 'Simulado' }} |" >> $GITHUB_STEP_SUMMARY
-                  echo "| Health check | ${{ secrets.ARGOCD_SERVER != '' && 'Real' || 'Simulado' }} |" >> $GITHUB_STEP_SUMMARY
+                  echo "| ArgoCD sync | $ARGOCD_CONFIGURED |" >> $GITHUB_STEP_SUMMARY
+                  echo "| Health check | $ARGOCD_CONFIGURED |" >> $GITHUB_STEP_SUMMARY
                   echo "| Status | Deployed |" >> $GITHUB_STEP_SUMMARY
