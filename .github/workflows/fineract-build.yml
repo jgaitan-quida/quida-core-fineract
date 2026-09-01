@@ -43,6 +43,9 @@ jobs:
         name: "Build + Docker + Sign + SBOM"
         runs-on: ubuntu-latest
         timeout-minutes: 30
+        outputs:
+            image_tag: ${{ steps.meta.outputs.image_tag }}
+            image_digest: ${{ steps.build.outputs.image_digest }}
 
         steps:
             - name: Checkout
@@ -156,3 +159,13 @@ jobs:
                   echo "| SBOM SPDX | Generado |" >> $GITHUB_STEP_SUMMARY
                   echo "| SBOM CycloneDX | Generado |" >> $GITHUB_STEP_SUMMARY
                   echo "| Push ECR | No (PoC sin ECR) |" >> $GITHUB_STEP_SUMMARY
+
+    trigger-deploy:
+        name: "Trigger P3.2 Deploy"
+        needs: build
+        if: success()
+        uses: ./.github/workflows/fineract-deploy.yml
+        with:
+            image_tag: ${{ needs.build.outputs.image_tag }}
+            environment: dev
+        secrets: inherit
